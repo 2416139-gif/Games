@@ -1,0 +1,346 @@
+html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Dodge - FIFO Apple</title>
+    <style>
+        :root {
+            --bg-color: #0a0a0a;
+            --neon-blue: #00f2ff;
+            --neon-red: #ff3131;
+            --text-color: #ffffff;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            font-family: 'Segoe UI', sans-serif;
+            user-select: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-around;
+            pointer-events: none;
+            color: var(--text-color);
+            font-size: 18px;
+            font-weight: 900;
+            text-transform: uppercase;
+            z-index: 10;
+        }
+
+        .score-box span { color: var(--neon-blue); }
+        .timer-info { font-size: 12px; color: #ff3131; margin-top: 5px; text-align: center; opacity: 0.8; }
+
+        #overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 20;
+        }
+
+        #overlay h1 {
+            color: var(--neon-red);
+            font-size: clamp(40px, 10vw, 60px);
+            margin: 0;
+            text-shadow: 0 0 20px var(--neon-red);
+        }
+
+        #restart-btn {
+            margin-top: 30px;
+            padding: 15px 40px;
+            font-size: 18px;
+            background: transparent;
+            color: var(--neon-blue);
+            border: 2px solid var(--neon-blue);
+            cursor: pointer;
+            box-shadow: 0 0 15px var(--neon-blue);
+            transition: 0.3s;
+        }
+
+        #restart-btn:hover {
+            background: var(--neon-blue);
+            color: black;
+        }
+
+        canvas { display: block; touch-action: none; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div>
+            <div class="score-box">SCORE: <span id="current-score">0</span></div>
+            <div class="timer-info">FIFO: 10s Lifespan</div>
+        </div>
+        <div class="score-box">BEST: <span id="high-score">0</span></div>
+    </div>
+
+    <div id="overlay">
+        <h1>GAME OVER</h1>
+        <p style="color: white; font-size: 20px;">Score: <span id="final-score">0</span></p>
+        <button id="restart-btn">PLAY AGAIN</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('current-score');
+        const highScoreEl = document.getElementById('high-score');
+        const finalScoreEl = document.getElementById('final-score');
+        const overlay = document.getElementById('overlay');
+        const restartBtn = document.getElementById('restart-btn');
+
+        let score = 0;
+        let highScore = localStorage.getItem('appleDodgeBestV2') || 0;
+        let gameActive = true;
+        let lastTime = 0;
+        let spawnTimer = 0;
+        let survivalCounter = 0;
+        
+        const player = { x: 0, y: 0, radius: 15 };
+        let enemies = []; 
+        let particles = [];
+        const LIFESPAN = 10000; // Reduced to 10 seconds
+
+        function init() {
+            resize();
+            highScoreEl.innerText = highScore;
+            player.x = canvas.width / 2;
+            player.y = canvas.height / 2;
+            
+            const updatePos = (e) => {
+                if (!gameActive) return;
+                const rect = canvas.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                player.x = clientX - rect.left;
+                player.y = clientY - rect.top;
+            };
+
+            window.addEventListener('mousemove', updatePos);
+            window.addEventListener('touchmove', updatePos, { passive: false });
+            window.addEventListener('resize', resize);
+            restartBtn.addEventListener('click', restartGame);
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        function createExplosion(x, y) {
+            for (let i = 0; i < 15; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 8,
+                    vy: (Math.random() - 0.5) * 8,
+                    life: 1.0,
+                    decay: 0.02 + Math.random() * 0.03,
+                    size: 2 + Math.random() * 3
+                });
+            }
+        }
+
+        function spawnEnemy(timestamp) {
+            const side = Math.floor(Math.random() * 4);
+            let x, y;
+            if (side === 0) { x = Math.random() * canvas.width; y = -50; }
+            else if (side === 1) { x = canvas.width + 50; y = Math.random() * canvas.height; }
+            else if (side === 2) { x = Math.random() * canvas.width; y = canvas.height + 50; }
+            else { x = -50; y = Math.random() * canvas.height; }
+
+            enemies.push({
+                x, y,
+                birth: timestamp,
+                speed: 1.5 + Math.random() * 2 + (score / 25),
+                offset: Math.random() * 100
+            });
+        }
+
+        function drawApple(x, y) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#00f2ff';
+            
+            // Stem
+            ctx.strokeStyle = '#00f2ff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(0, -12);
+            ctx.quadraticCurveTo(5, -20, 8, -18);
+            ctx.stroke();
+
+            // Apple Body
+            ctx.fillStyle = '#00f2ff';
+            ctx.beginPath();
+            ctx.moveTo(0, -10);
+            ctx.bezierCurveTo(15, -15, 20, 10, 5, 18);
+            ctx.bezierCurveTo(0, 20, 0, 20, -5, 18);
+            ctx.bezierCurveTo(-20, 10, -15, -15, 0, -10);
+            ctx.fill();
+            
+            ctx.restore();
+        }
+
+        function drawHuman(en, time) {
+            ctx.save();
+            const age = time - en.birth;
+            const remaining = LIFESPAN - age;
+            
+            // Fade and shake slightly when about to explode
+            let shake = 0;
+            if (remaining < 1500) {
+                shake = (Math.random() - 0.5) * 4;
+                ctx.globalAlpha = 0.5 + Math.sin(time * 0.05) * 0.5;
+            }
+            
+            ctx.strokeStyle = '#ff3131';
+            ctx.lineWidth = 2.5;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#ff3131';
+
+            const walk = Math.sin(time * 0.012 + en.offset);
+            const x = en.x + shake;
+            const y = en.y + shake;
+            
+            // Draw Human Figure
+            ctx.beginPath();
+            ctx.arc(x, y - 20, 5, 0, Math.PI * 2); // Head
+            ctx.moveTo(x, y - 15); ctx.lineTo(x, y); // Body
+            ctx.moveTo(x - 10 * walk, y - 10); ctx.lineTo(x + 10 * walk, y - 10); // Arms
+            ctx.moveTo(x, y); ctx.lineTo(x - 8 * walk, y + 12); // Left Leg
+            ctx.moveTo(x, y); ctx.lineTo(x + 8 * walk, y + 12); // Right Leg
+            ctx.stroke();
+
+            ctx.restore();
+        }
+
+        function update(deltaTime, timestamp) {
+            if (!gameActive) return;
+
+            survivalCounter += deltaTime;
+            if (survivalCounter >= 1000) {
+                score++;
+                scoreEl.innerText = score;
+                survivalCounter = 0;
+            }
+
+            spawnTimer += deltaTime;
+            if (spawnTimer >= Math.max(200, 800 - score * 10)) {
+                spawnEnemy(timestamp);
+                spawnTimer = 0;
+            }
+
+            // FIFO Check
+            if (enemies.length > 0) {
+                const oldest = enemies[0];
+                if (timestamp - oldest.birth >= LIFESPAN) {
+                    createExplosion(oldest.x, oldest.y);
+                    enemies.shift(); 
+                }
+            }
+
+            // Particles update
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= p.decay;
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                } else {
+                    ctx.save();
+                    ctx.globalAlpha = p.life;
+                    ctx.fillStyle = '#ff3131';
+                    ctx.shadowBlur = 5;
+                    ctx.shadowColor = '#ff3131';
+                    ctx.fillRect(p.x, p.y, p.size, p.size);
+                    ctx.restore();
+                }
+            }
+
+            // Enemies update
+            for (let i = 0; i < enemies.length; i++) {
+                const en = enemies[i];
+                const dx = player.x - en.x;
+                const dy = player.y - en.y;
+                const angle = Math.atan2(dy, dx);
+                
+                en.x += Math.cos(angle) * en.speed;
+                en.y += Math.sin(angle) * en.speed;
+
+                const dist = Math.hypot(dx, dy);
+                if (dist < 22) gameOver();
+
+                drawHuman(en, timestamp);
+            }
+        }
+
+        function gameOver() {
+            gameActive = false;
+            overlay.style.display = 'flex';
+            finalScoreEl.innerText = score;
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('appleDodgeBestV2', highScore);
+                highScoreEl.innerText = highScore;
+            }
+        }
+
+        function restartGame() {
+            score = 0;
+            scoreEl.innerText = "0";
+            enemies = [];
+            particles = [];
+            gameActive = true;
+            overlay.style.display = 'none';
+            requestAnimationFrame(gameLoop);
+        }
+
+        function gameLoop(timestamp) {
+            if (!lastTime) lastTime = timestamp;
+            const deltaTime = timestamp - lastTime;
+            lastTime = timestamp;
+
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Grid
+            ctx.strokeStyle = '#151515';
+            ctx.lineWidth = 1;
+            for(let i=0; i<canvas.width; i+=60) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,canvas.height); ctx.stroke(); }
+            for(let i=0; i<canvas.height; i+=60) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(canvas.width,i); ctx.stroke(); }
+
+            update(deltaTime, timestamp);
+            drawApple(player.x, player.y);
+
+            if (gameActive) requestAnimationFrame(gameLoop);
+        }
+
+        init();
+    </script>
+</body>
+</html>
+
